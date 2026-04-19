@@ -1,0 +1,15 @@
+services:
+  annotation-tool:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: annotation-tool
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./uploads:/app/uploads
+      - ./annotation_json:/app/annotation_json
+      - ./camera_ips.json:/app/camera_ips.json
