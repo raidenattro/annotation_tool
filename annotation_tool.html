@@ -597,6 +597,21 @@ function getDist(p, a, b) {
     return Math.hypot(p[0] - (a[0] + t * (b[0] - a[0])), p[1] - (a[1] + t * (b[1] - a[1])));
 }
 
+function getPointDist(a, b) {
+    return Math.hypot(a[0] - b[0], a[1] - b[1]);
+}
+
+function refreshPerspectiveFromShelf() {
+    if (shelfPoints.length !== 4) return;
+    const dst = [[0, 0], [MAP_W, 0], [MAP_W, MAP_H], [0, MAP_H]];
+    try {
+        M_fwd = getPerspectiveTransform(shelfPoints, dst);
+        M_inv = getPerspectiveTransform(dst, shelfPoints);
+    } catch (_err) {
+        // Skip update if points are degenerate while dragging.
+    }
+}
+
 function resetAnnotationSession(options) {
     const opts = options || {};
     const preserveCanvas = opts.preserveCanvas === true;
@@ -732,9 +747,7 @@ annCvs.onmousedown = (e) => {
     if (shelfPoints.length < 4) {
         shelfPoints.push([x, y]);
         if (shelfPoints.length === 4) {
-            const dst = [[0, 0], [MAP_W, 0], [MAP_W, MAP_H], [0, MAP_H]];
-            M_fwd = getPerspectiveTransform(shelfPoints, dst);
-            M_inv = getPerspectiveTransform(dst, shelfPoints);
+            refreshPerspectiveFromShelf();
             initGrid();
             boxIdOverrides = {};
             renderBoxEditor();
@@ -742,6 +755,13 @@ annCvs.onmousedown = (e) => {
             setStatus('网格已生成，可拖拽黄线微调后保存。', 'ok');
         }
     } else {
+        for (let i = 0; i < shelfPoints.length; i++) {
+            if (getPointDist([x, y], shelfPoints[i]) < 12) {
+                dragTarget = { type: 'corner', i: i };
+                return;
+            }
+        }
+
         for (let i = 1; i < gridRows; i++) {
             let p1 = perspectiveTransform([0, layerYs[i]], M_inv);
             let p2 = perspectiveTransform([MAP_W, layerYs[i]], M_inv);
@@ -776,7 +796,17 @@ annCvs.onmousemove = (e) => {
     let rect = annCvs.getBoundingClientRect();
     let scaleX = annCvs.width / rect.width;
     let scaleY = annCvs.height / rect.height;
-    let flatPt = perspectiveTransform([(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY], M_fwd);
+    let canvasPt = [(e.clientX - rect.left) * scaleX, (e.clientY - rect.top) * scaleY];
+
+    if (dragTarget.type === 'corner') {
+        shelfPoints[dragTarget.i] = [canvasPt[0], canvasPt[1]];
+        refreshPerspectiveFromShelf();
+        renderAnnotator();
+        document.getElementById('btnSave').disabled = !M_inv;
+        return;
+    }
+
+    let flatPt = perspectiveTransform(canvasPt, M_fwd);
 
     if (dragTarget.type === 'h') {
         let i = dragTarget.i;
