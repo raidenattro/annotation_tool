@@ -84,7 +84,7 @@
             cursor: not-allowed;
         }
         #annotatorCanvas {
-            display: none;
+            display: inline-block;
             max-width: 100%;
             border: 2px solid #34495e;
             border-radius: 8px;
@@ -205,11 +205,14 @@ let bgImage = new Image();
 let shelfPoints = [];
 let M_fwd = null, M_inv = null;
 const MAP_W = 600, MAP_H = 600;
+const DEFAULT_CANVAS_W = 854;
+const DEFAULT_CANVAS_H = 480;
 let gridRows = 4, gridCols = 4;
 let layerYs = [], layerColXs = [];
 let dragTarget = null, dragStartFlat = null, dragStartState = null;
 let cameraNameByUrl = {};
 let boxIdOverrides = {};
+let loadedAnnotation = null;
 let annotationSource = {
     capture_source: 'file',
     camera_url: '',
@@ -263,6 +266,7 @@ function applyGridShape() {
         initGrid();
         renderAnnotator();
         renderBoxEditor();
+        document.getElementById('btnSave').disabled = false;
         setStatus(`网格已更新为 ${gridRows}x${gridCols}。可继续微调并保存。`, 'ok');
     } else {
         renderBoxEditor();
@@ -279,7 +283,6 @@ function renderFrameAndEnterAnnotating(imageSrc, loadedMsg) {
     bgImage.onload = () => {
         annCvs.width = bgImage.width;
         annCvs.height = bgImage.height;
-        annCvs.style.display = 'inline-block';
         renderAnnotator();
         setStatus(loadedMsg || '请按顺序点击 4 个点：左上、右上、右下、左下。', 'ok');
     };
@@ -402,7 +405,7 @@ async function captureCameraFrameAndAnnotate() {
         return;
     }
 
-    resetAnnotationSession();
+    resetAnnotationSession({ preserveCanvas: true, preserveLoaded: true, preserveGrid: true });
     setStatus('正在通过摄像头抓取一帧...', 'warn');
 
     try {
@@ -556,6 +559,7 @@ function renderBoxEditor() {
                 }
                 // 实时更新标注页面
                 renderAnnotator();
+                document.getElementById('btnSave').disabled = !M_inv;
             });
 
             item.appendChild(label);
@@ -593,20 +597,36 @@ function getDist(p, a, b) {
     return Math.hypot(p[0] - (a[0] + t * (b[0] - a[0])), p[1] - (a[1] + t * (b[1] - a[1])));
 }
 
-function resetAnnotationSession() {
-    shelfPoints = [];
-    M_fwd = null;
-    M_inv = null;
-    layerYs = [];
-    layerColXs = [];
+function resetAnnotationSession(options) {
+    const opts = options || {};
+    const preserveCanvas = opts.preserveCanvas === true;
+    const preserveLoaded = opts.preserveLoaded === true;
+    const preserveGrid = opts.preserveGrid === true;
+    if (!preserveGrid) {
+        shelfPoints = [];
+        M_fwd = null;
+        M_inv = null;
+        layerYs = [];
+        layerColXs = [];
+    }
     dragTarget = null;
     dragStartFlat = null;
     dragStartState = null;
-    boxIdOverrides = {};
-    annCtx.clearRect(0, 0, annCvs.width, annCvs.height);
+    if (!preserveGrid) {
+        boxIdOverrides = {};
+    }
+    if (!preserveLoaded) {
+        loadedAnnotation = null;
+    }
+    if (!preserveCanvas) {
+        annCtx.clearRect(0, 0, annCvs.width, annCvs.height);
+        renderEmptyCanvas();
+    }
     document.getElementById('btnSave').disabled = true;
     renderBoxEditor();
-    setStatus('已重置。请重新上传并标注。', 'warn');
+    if (!preserveGrid) {
+        setStatus('已重置。请重新上传并标注。', 'warn');
+    }
 }
 
 function makeAnnotationPayload() {
@@ -659,7 +679,7 @@ async function uploadAndStartAnnotating() {
         return;
     }
 
-    resetAnnotationSession();
+    resetAnnotationSession({ preserveCanvas: true, preserveLoaded: true, preserveGrid: true });
     annotationSource = {
         capture_source: 'file',
         camera_url: '',
@@ -698,6 +718,8 @@ async function uploadAndStartAnnotating() {
 
 loadCameraIpList();
 initGridSelectors();
+initCanvasPlaceholder();
+loadAnnotationOnStartup();
 
 annCvs.onmousedown = (e) => {
     let rect = annCvs.getBoundingClientRect();
@@ -772,6 +794,7 @@ annCvs.onmousemove = (e) => {
     }
 
     renderAnnotator();
+    document.getElementById('btnSave').disabled = !M_inv;
 };
 
 annCvs.onmouseup = () => {
@@ -779,7 +802,17 @@ annCvs.onmouseup = () => {
 };
 
 function renderAnnotator() {
-    if (!bgImage.src) return;
+    if (!bgImage.src) {
+        if (M_inv) {
+            renderEmptyCanvas();
+            drawEditableGridBoxes();
+        } else if (loadedAnnotation) {
+            renderLoadedAnnotation();
+        } else {
+            renderEmptyCanvas();
+        }
+        return;
+    }
 
     annCtx.drawImage(bgImage, 0, 0);
     annCtx.lineWidth = 3;
@@ -801,44 +834,225 @@ function renderAnnotator() {
     }
 
     if (M_inv) {
-        annCtx.strokeStyle = '#f1c40f';
-        for (let i = 1; i < gridRows; i++) {
-            let p1 = perspectiveTransform([0, layerYs[i]], M_inv);
-            let p2 = perspectiveTransform([MAP_W, layerYs[i]], M_inv);
+        drawEditableGridBoxes();
+    }
+}
+
+function drawEditableGridBoxes() {
+    if (!M_inv) return;
+
+    annCtx.strokeStyle = '#f1c40f';
+    annCtx.fillStyle = '#00ffcc';
+    annCtx.font = 'bold 18px Arial';
+    annCtx.textAlign = 'center';
+    annCtx.textBaseline = 'middle';
+
+    for (let i = 0; i < gridRows; i++) {
+        for (let j = 0; j < gridCols; j++) {
+            const p0 = perspectiveTransform([layerColXs[i][j], layerYs[i]], M_inv);
+            const p1 = perspectiveTransform([layerColXs[i][j + 1], layerYs[i]], M_inv);
+            const p2 = perspectiveTransform([layerColXs[i][j + 1], layerYs[i + 1]], M_inv);
+            const p3 = perspectiveTransform([layerColXs[i][j], layerYs[i + 1]], M_inv);
+            const poly = [p0, p1, p2, p3];
+
             annCtx.beginPath();
-            annCtx.moveTo(p1[0], p1[1]);
-            annCtx.lineTo(p2[0], p2[1]);
+            annCtx.moveTo(poly[0][0], poly[0][1]);
+            for (let k = 1; k < poly.length; k++) {
+                annCtx.lineTo(poly[k][0], poly[k][1]);
+            }
+            annCtx.closePath();
             annCtx.stroke();
+
+            const centerX = (poly[0][0] + poly[1][0] + poly[2][0] + poly[3][0]) / 4;
+            const centerY = (poly[0][1] + poly[1][1] + poly[2][1] + poly[3][1]) / 4;
+            const boxId = getEffectiveBoxId(i, j);
+            annCtx.fillText(boxId, centerX, centerY);
+        }
+    }
+}
+
+function initCanvasPlaceholder() {
+    if (!annCvs.width || !annCvs.height) {
+        annCvs.width = DEFAULT_CANVAS_W;
+        annCvs.height = DEFAULT_CANVAS_H;
+    }
+    renderEmptyCanvas();
+}
+
+function renderEmptyCanvas() {
+    annCtx.clearRect(0, 0, annCvs.width, annCvs.height);
+    annCtx.fillStyle = '#0f151a';
+    annCtx.fillRect(0, 0, annCvs.width, annCvs.height);
+    annCtx.fillStyle = '#7f8c8d';
+    annCtx.font = 'bold 18px Arial';
+    annCtx.textAlign = 'center';
+    annCtx.textBaseline = 'middle';
+    annCtx.fillText('等待载入标注或视频帧...', annCvs.width / 2, annCvs.height / 2);
+}
+
+function renderLoadedAnnotation() {
+    const ann = loadedAnnotation;
+    if (!ann) return;
+    drawAnnotationBoxes(ann, { overlay: false });
+}
+
+function drawAnnotationBoxes(ann, options) {
+    const opts = options || {};
+    const overlay = opts.overlay === true;
+
+    if (!overlay) {
+        annCtx.clearRect(0, 0, annCvs.width, annCvs.height);
+        annCtx.fillStyle = '#0f151a';
+        annCtx.fillRect(0, 0, annCvs.width, annCvs.height);
+    }
+
+    const boxes = Array.isArray(ann.boxes) ? ann.boxes : [];
+    if (!boxes.length) return;
+
+    annCtx.lineWidth = 2;
+    annCtx.strokeStyle = overlay ? '#00d2a0' : '#f1c40f';
+    annCtx.fillStyle = '#00ffcc';
+    annCtx.font = overlay ? 'bold 16px Arial' : 'bold 18px Arial';
+    annCtx.textAlign = 'center';
+    annCtx.textBaseline = 'middle';
+
+    for (const box of boxes) {
+        const poly = Array.isArray(box.video_polygon) ? box.video_polygon : [];
+        if (poly.length < 4) continue;
+
+        annCtx.beginPath();
+        annCtx.moveTo(poly[0][0], poly[0][1]);
+        for (let i = 1; i < poly.length; i++) {
+            annCtx.lineTo(poly[i][0], poly[i][1]);
+        }
+        annCtx.closePath();
+        annCtx.stroke();
+
+        let sumX = 0;
+        let sumY = 0;
+        let count = 0;
+        for (const pt of poly) {
+            sumX += pt[0];
+            sumY += pt[1];
+            count += 1;
+        }
+        const centerX = count ? sumX / count : poly[0][0];
+        const centerY = count ? sumY / count : poly[0][1];
+        const label = box.box_id !== undefined ? String(box.box_id) : '';
+        if (label) {
+            annCtx.fillText(label, centerX, centerY);
+        }
+    }
+}
+
+function applyAnnotationToGrid(ann) {
+    if (!ann || !Array.isArray(ann.boxes) || !M_fwd) return;
+
+    initGrid();
+
+    const rowCount = gridRows;
+    const colCount = gridCols;
+    const ySamples = Array.from({ length: rowCount + 1 }, () => []);
+    const xSamples = Array.from({ length: rowCount }, () =>
+        Array.from({ length: colCount + 1 }, () => [])
+    );
+
+    for (const box of ann.boxes) {
+        const rowIdx = Number(box.layer) - 1;
+        const colIdx = Number(box.column) - 1;
+        if (rowIdx < 0 || colIdx < 0 || rowIdx >= rowCount || colIdx >= colCount) {
+            continue;
         }
 
-        for (let i = 0; i < gridRows; i++) {
-            for (let j = 1; j < gridCols; j++) {
-                let p1 = perspectiveTransform([layerColXs[i][j], layerYs[i]], M_inv);
-                let p2 = perspectiveTransform([layerColXs[i][j], layerYs[i + 1]], M_inv);
-                annCtx.beginPath();
-                annCtx.moveTo(p1[0], p1[1]);
-                annCtx.lineTo(p2[0], p2[1]);
-                annCtx.stroke();
+        const poly = Array.isArray(box.video_polygon) ? box.video_polygon : [];
+        if (poly.length < 4) continue;
+
+        const flat = poly.map((pt) => perspectiveTransform(pt, M_fwd));
+        const topY = (flat[0][1] + flat[1][1]) / 2;
+        const bottomY = (flat[2][1] + flat[3][1]) / 2;
+        const leftX = (flat[0][0] + flat[3][0]) / 2;
+        const rightX = (flat[1][0] + flat[2][0]) / 2;
+
+        ySamples[rowIdx].push(topY);
+        ySamples[rowIdx + 1].push(bottomY);
+        xSamples[rowIdx][colIdx].push(leftX);
+        xSamples[rowIdx][colIdx + 1].push(rightX);
+
+        const boxId = box.box_id !== undefined ? String(box.box_id) : '';
+        const defaultId = getDefaultBoxId(rowIdx, colIdx);
+        if (boxId && boxId !== defaultId) {
+            boxIdOverrides[getCellKey(rowIdx, colIdx)] = boxId;
+        }
+    }
+
+    for (let i = 0; i <= rowCount; i++) {
+        if (ySamples[i].length) {
+            layerYs[i] = averageArray(ySamples[i]);
+        }
+    }
+
+    for (let i = 0; i < rowCount; i++) {
+        for (let j = 0; j <= colCount; j++) {
+            if (xSamples[i][j].length) {
+                layerColXs[i][j] = averageArray(xSamples[i][j]);
             }
         }
-        
-        // 在每个网格单元中心显示 box_id（实时显示用户修改的ID）
-        annCtx.fillStyle = '#00ffcc';
-        annCtx.font = 'bold 20px Arial';
-        annCtx.textAlign = 'center';
-        annCtx.textBaseline = 'middle';
-        for (let i = 0; i < gridRows; i++) {
-            for (let j = 0; j < gridCols; j++) {
-                // 计算网格单元中心点（在标准网格空间）
-                let centerX = (layerColXs[i][j] + layerColXs[i][j + 1]) / 2;
-                let centerY = (layerYs[i] + layerYs[i + 1]) / 2;
-                // 透视变换到实际视频空间
-                let centerPt = perspectiveTransform([centerX, centerY], M_inv);
-                // 获取有效的 box_id（包括用户修改的）
-                let boxId = getEffectiveBoxId(i, j);
-                annCtx.fillText(boxId, centerPt[0], centerPt[1]);
+    }
+}
+
+function averageArray(values) {
+    let sum = 0;
+    for (const val of values) sum += val;
+    return sum / values.length;
+}
+
+async function loadAnnotationOnStartup(options) {
+    const opts = options || {};
+    const silent = opts.silent === true;
+    try {
+        const resp = await fetch('/api/annotation');
+        if (!resp.ok) {
+            return;
+        }
+
+        const payload = await resp.json();
+        const ann = payload && (payload.data || payload);
+        if (!ann || !Array.isArray(ann.boxes) || ann.boxes.length === 0) {
+            return;
+        }
+
+        loadedAnnotation = ann;
+
+        if (Array.isArray(ann.shelf_corners) && ann.shelf_corners.length === 4) {
+            shelfPoints = ann.shelf_corners.map((pt) => [Number(pt[0]), Number(pt[1])]);
+            const dst = [[0, 0], [MAP_W, 0], [MAP_W, MAP_H], [0, MAP_H]];
+            M_fwd = getPerspectiveTransform(shelfPoints, dst);
+            M_inv = getPerspectiveTransform(dst, shelfPoints);
+        }
+
+        if (ann.annotation_size) {
+            annCvs.width = Number(ann.annotation_size.width) || annCvs.width;
+            annCvs.height = Number(ann.annotation_size.height) || annCvs.height;
+        }
+
+        if (Array.isArray(ann.grid_shape) && ann.grid_shape.length === 2) {
+            const rows = Number(ann.grid_shape[0]);
+            const cols = Number(ann.grid_shape[1]);
+            if (Number.isInteger(rows) && Number.isInteger(cols)) {
+                gridRows = rows;
+                gridCols = cols;
+                initGridSelectors();
             }
         }
+        boxIdOverrides = {};
+        applyAnnotationToGrid(ann);
+        document.getElementById('btnSave').disabled = !M_inv;
+        renderAnnotator();
+        if (!silent) {
+            setStatus('已加载 annotation.json，显示网格与 box_id。', 'ok');
+        }
+    } catch (_err) {
+        // no-op: 没有标注文件时不显示
     }
 }
 
@@ -876,6 +1090,7 @@ async function saveAnnotationOnly() {
         const result = await resp.json();
         if (resp.ok && result.status === 'success') {
             setStatus(`标注已保存成功：${result.json_path || ''}`, 'ok');
+            await loadAnnotationOnStartup({ silent: true });
         } else {
             setStatus(`保存失败：${result.error || '未知错误'}`, 'err');
         }

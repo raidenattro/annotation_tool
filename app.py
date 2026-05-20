@@ -6,6 +6,7 @@
 3) 保存标注 JSON。
 """
 
+import argparse
 import base64
 import json
 import os
@@ -235,6 +236,21 @@ def save_annotation():
     })
 
 
+@app.get("/api/annotation")
+def get_annotation():
+    """读取已保存的标注 JSON。"""
+    out_path = ANNOTATION_DIR / "annotation.json"
+    if not out_path.exists():
+        return jsonify({"error": "annotation not found"}), 404
+
+    try:
+        data = json.loads(out_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return jsonify({"error": "invalid annotation json"}), 500
+
+    return jsonify({"status": "success", "data": data})
+
+
 @app.post("/api/shutdown")
 def shutdown_service():
     """关闭当前 Flask 服务进程。"""
@@ -249,5 +265,14 @@ def shutdown_service():
     return jsonify({"status": "success", "message": "process exiting"})
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Annotation tool server")
+    parser.add_argument("--host", default="127.0.0.1", help="Host to bind")
+    parser.add_argument("--port", type=int, default=5000, help="Port to bind")
+    parser.add_argument("--debug", action="store_true", help="Enable debug mode")
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=True)
+    args = parse_args()
+    app.run(host=args.host, port=args.port, debug=args.debug, use_reloader=False)
