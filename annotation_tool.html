@@ -551,9 +551,11 @@ function renderBoxEditor() {
                 const raw = String(e.target.value || '').trim();
                 if (!raw) {
                     delete boxIdOverrides[key];
-                    return;
+                } else {
+                    boxIdOverrides[key] = raw;
                 }
-                boxIdOverrides[key] = raw;
+                // 实时更新标注页面
+                renderAnnotator();
             });
 
             item.appendChild(label);
@@ -817,6 +819,24 @@ function renderAnnotator() {
                 annCtx.moveTo(p1[0], p1[1]);
                 annCtx.lineTo(p2[0], p2[1]);
                 annCtx.stroke();
+            }
+        }
+        
+        // 在每个网格单元中心显示 box_id（实时显示用户修改的ID）
+        annCtx.fillStyle = '#00ffcc';
+        annCtx.font = 'bold 20px Arial';
+        annCtx.textAlign = 'center';
+        annCtx.textBaseline = 'middle';
+        for (let i = 0; i < gridRows; i++) {
+            for (let j = 0; j < gridCols; j++) {
+                // 计算网格单元中心点（在标准网格空间）
+                let centerX = (layerColXs[i][j] + layerColXs[i][j + 1]) / 2;
+                let centerY = (layerYs[i] + layerYs[i + 1]) / 2;
+                // 透视变换到实际视频空间
+                let centerPt = perspectiveTransform([centerX, centerY], M_inv);
+                // 获取有效的 box_id（包括用户修改的）
+                let boxId = getEffectiveBoxId(i, j);
+                annCtx.fillText(boxId, centerPt[0], centerPt[1]);
             }
         }
     }

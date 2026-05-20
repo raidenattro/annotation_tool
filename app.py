@@ -224,8 +224,7 @@ def save_annotation():
     if payload is None:
         return jsonify({"error": "invalid json body"}), 400
 
-    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = ANNOTATION_DIR / f"annotation_{stamp}.json"
+    out_path = ANNOTATION_DIR / "annotation.json"
 
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
