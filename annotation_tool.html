@@ -720,6 +720,7 @@ loadCameraIpList();
 initGridSelectors();
 initCanvasPlaceholder();
 loadAnnotationOnStartup();
+loadLastFrameOnStartup();
 
 annCvs.onmousedown = (e) => {
     let rect = annCvs.getBoundingClientRect();
@@ -1053,6 +1054,25 @@ async function loadAnnotationOnStartup(options) {
         }
     } catch (_err) {
         // no-op: 没有标注文件时不显示
+    }
+}
+
+async function loadLastFrameOnStartup() {
+    if (bgImage.src) return;
+    try {
+        const resp = await fetch('/api/last_frame');
+        if (!resp.ok) {
+            return;
+        }
+
+        const payload = await resp.json();
+        if (!payload || !payload.image) {
+            return;
+        }
+
+        renderFrameAndEnterAnnotating('data:image/jpeg;base64,' + payload.image, '已加载上次抓帧画面。');
+    } catch (_err) {
+        // no-op: 没有缓存帧时不处理
     }
 }
 

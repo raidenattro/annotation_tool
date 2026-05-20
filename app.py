@@ -29,6 +29,7 @@ UPLOAD_DIR = BASE_DIR / "uploads"
 ANNOTATION_DIR = BASE_DIR / "annotation_json"
 CAMERA_IP_FILE = BASE_DIR / "camera_ips.json"
 CURRENT_VIDEO = UPLOAD_DIR / "current_video"
+LAST_FRAME = UPLOAD_DIR / "last_frame.jpg"
 
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 ANNOTATION_DIR.mkdir(parents=True, exist_ok=True)
@@ -105,6 +106,11 @@ def frame_to_base64(frame):
     return base64.b64encode(encoded.tobytes()).decode("utf-8")
 
 
+def save_last_frame(frame):
+    """保存最近一次抓取的帧到本地文件。"""
+    cv2.imwrite(str(LAST_FRAME), frame)
+
+
 @app.get("/")
 def index():
     """返回前端标注页面。"""
@@ -136,6 +142,7 @@ def get_first_frame():
         return jsonify({"error": "failed to decode first frame"}), 400
 
     frame = resize_frame_to_480p(frame)
+    save_last_frame(frame)
 
     image_b64 = frame_to_base64(frame)
     if image_b64 is None:
@@ -210,6 +217,7 @@ def get_camera_frame():
         return jsonify({"error": "failed to read frame from camera"}), 400
 
     frame = resize_frame_to_480p(frame)
+    save_last_frame(frame)
 
     image_b64 = frame_to_base64(frame)
     if image_b64 is None:
@@ -249,6 +257,23 @@ def get_annotation():
         return jsonify({"error": "invalid annotation json"}), 500
 
     return jsonify({"status": "success", "data": data})
+
+
+@app.get("/api/last_frame")
+def get_last_frame():
+    """读取最近一次抓取的帧。"""
+    if not LAST_FRAME.exists():
+        return jsonify({"error": "last frame not found"}), 404
+
+    frame = cv2.imread(str(LAST_FRAME))
+    if frame is None:
+        return jsonify({"error": "failed to read last frame"}), 500
+
+    image_b64 = frame_to_base64(frame)
+    if image_b64 is None:
+        return jsonify({"error": "failed to encode frame"}), 500
+
+    return jsonify({"status": "success", "image": image_b64})
 
 
 @app.post("/api/shutdown")
