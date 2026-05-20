@@ -166,8 +166,8 @@
                     </select>
                     <input type="text" id="cameraIpInput" placeholder="新增摄像头地址，如 rtsp://..." />
                     <input type="text" id="cameraNameInput" placeholder="货架id名称(必选)" />
-                    <button class="secondary" onclick="addCameraIpFromInput()">保存 IP</button>
                     <button class="secondary" onclick="deleteSelectedCameraIp()">删除所选 IP</button>
+                    <button class="secondary" onclick="addCameraIpFromInput()">保存 IP</button>
                     <button onclick="captureCameraFrameAndAnnotate()">通过摄像头抓帧标注</button>
                 </div>
             </div>
@@ -176,6 +176,7 @@
                 <div class="group-title">标注操作</div>
                 <div class="row">
                     <button id="btnSave" class="secondary" onclick="saveAnnotationOnly()" disabled>保存标注</button>
+                    <button class="secondary" onclick="finishAnnotationSession()">结束标注</button>
                     <button class="secondary" onclick="resetAnnotationSession()">重置标注</button>
                     <button class="secondary" onclick="shutdownService()">退出服务</button>
                 </div>
@@ -193,6 +194,11 @@
 
     <div id="boxEditorPanel" class="panel box-editor-panel">
         <div class="group-title">2D箱子面板（可修改每个 box_id）</div>
+        <div class="row" style="justify-content: flex-start;">
+            <label class="field">货架ID
+                <select id="shelfSelect"></select>
+            </label>
+        </div>
         <div id="boxEditorGrid" class="box-editor-grid"></div>
     </div>
 </div>
@@ -213,6 +219,8 @@ let dragTarget = null, dragStartFlat = null, dragStartState = null;
 let cameraNameByUrl = {};
 let boxIdOverrides = {};
 let loadedAnnotation = null;
+let shelves = [];
+let activeShelfIndex = -1;
 let annotationSource = {
     capture_source: 'file',
     camera_url: '',
@@ -314,6 +322,10 @@ document.getElementById('cameraIpSelect').addEventListener('change', (e) => {
     document.getElementById('cameraIpInput').value = value;
 });
 
+document.getElementById('shelfSelect').addEventListener('change', () => {
+    loadSelectedShelf();
+});
+
 function getCameraUrlFromUI() {
     const inputUrl = document.getElementById('cameraIpInput').value.trim();
     const selectedUrl = document.getElementById('cameraIpSelect').value.trim();
@@ -399,12 +411,6 @@ async function captureCameraFrameAndAnnotate() {
         return;
     }
 
-    const shelfCode = getShelfCodeFromUI(url);
-    if (!shelfCode) {
-        alert('请先填写货架id名称(必选)');
-        return;
-    }
-
     resetAnnotationSession({ preserveCanvas: true, preserveLoaded: true, preserveGrid: true });
     setStatus('正在通过摄像头抓取一帧...', 'warn');
 
@@ -423,8 +429,7 @@ async function captureCameraFrameAndAnnotate() {
         annotationSource = {
             capture_source: 'camera',
             camera_url: url,
-            camera_name: shelfCode,
-            shelf_code: shelfCode
+            camera_name: getCameraNameFromUI(url) || ''
         };
 
         renderFrameAndEnterAnnotating('data:image/jpeg;base64,' + data.image, '摄像头帧已加载。请按顺序点击 4 个点：左上、右上、右下、左下。');
@@ -518,20 +523,96 @@ function getEffectiveBoxId(rowIdx, colIdx) {
     return text;
 }
 
+function syncShelfSelectOptions(selectedCode) {
+    const select = document.getElementById('shelfSelect');
+    if (!select) return;
+    select.innerHTML = '';
+
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = shelves.length ? '选择货架' : '暂无货架';
+    select.appendChild(placeholder);
+
+    for (const shelf of shelves) {
+        const opt = document.createElement('option');
+        opt.value = shelf.shelf_code || '';
+        opt.textContent = shelf.shelf_code || '未命名货架';
+        select.appendChild(opt);
+    }
+
+    if (selectedCode) {
+        select.value = selectedCode;
+    }
+}
+
+function loadSelectedShelf() {
+    const select = document.getElementById('shelfSelect');
+    if (!select) return;
+    const code = (select.value || '').trim();
+    if (!code) return;
+    const idx = shelves.findIndex((s) => String(s.shelf_code || '') === code);
+    if (idx < 0) return;
+    loadShelfIntoEditor(shelves[idx]);
+    activeShelfIndex = idx;
+    document.getElementById('cameraNameInput').value = code;
+}
+
+function loadShelfIntoEditor(shelf) {
+    if (!shelf) return;
+    shelfPoints = Array.isArray(shelf.shelf_corners)
+        ? shelf.shelf_corners.map((pt) => [Number(pt[0]), Number(pt[1])])
+        : [];
+    if (shelfPoints.length === 4) {
+        const dst = [[0, 0], [MAP_W, 0], [MAP_W, MAP_H], [0, MAP_H]];
+        M_fwd = getPerspectiveTransform(shelfPoints, dst);
+        M_inv = getPerspectiveTransform(dst, shelfPoints);
+    } else {
+        M_fwd = null;
+        M_inv = null;
+    }
+
+    if (Array.isArray(shelf.grid_shape) && shelf.grid_shape.length === 2) {
+        const rows = Number(shelf.grid_shape[0]);
+        const cols = Number(shelf.grid_shape[1]);
+        if (Number.isInteger(rows) && Number.isInteger(cols)) {
+            gridRows = rows;
+            gridCols = cols;
+            initGridSelectors();
+        }
+    }
+
+    boxIdOverrides = {};
+    if (M_fwd) {
+        applyAnnotationToGrid({ boxes: shelf.boxes || [] });
+    }
+
+    loadedAnnotation = { boxes: shelf.boxes || [] };
+    renderAnnotator();
+    renderBoxEditor();
+    document.getElementById('btnSave').disabled = !M_inv;
+}
+
 function renderBoxEditor() {
     const panel = document.getElementById('boxEditorPanel');
     const grid = document.getElementById('boxEditorGrid');
     if (!panel || !grid) return;
 
     if (!M_inv || shelfPoints.length < 4) {
-        panel.style.display = 'none';
+        if (!shelves.length) {
+            panel.style.display = 'none';
+            grid.innerHTML = '';
+            return;
+        }
+        panel.style.display = 'block';
         grid.innerHTML = '';
+        syncShelfSelectOptions(activeShelfIndex >= 0 ? shelves[activeShelfIndex].shelf_code : '');
         return;
     }
 
     panel.style.display = 'block';
     grid.innerHTML = '';
     grid.style.gridTemplateColumns = `repeat(${gridCols}, minmax(110px, 1fr))`;
+    syncShelfSelectOptions(activeShelfIndex >= 0 ? shelves[activeShelfIndex].shelf_code : '');
 
     for (let i = 0; i < gridRows; i++) {
         for (let j = 0; j < gridCols; j++) {
@@ -590,6 +671,19 @@ function validateBoxIdsBeforeSave() {
     return { ok: true, message: '' };
 }
 
+function validateShelfCodeUnique(code) {
+    const nextCode = String(code || '').trim();
+    if (!nextCode) return { ok: false, message: '货架id不能为空' };
+    const existing = shelves.some((s, idx) => {
+        if (activeShelfIndex === idx) return false;
+        return String(s.shelf_code || '').trim() === nextCode;
+    });
+    if (existing) {
+        return { ok: false, message: `货架id重复：${nextCode}` };
+    }
+    return { ok: true, message: '' };
+}
+
 function getDist(p, a, b) {
     let l2 = (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2;
     if (l2 === 0) return Math.hypot(p[0] - a[0], p[1] - a[1]);
@@ -629,7 +723,7 @@ function resetAnnotationSession(options) {
     }
 }
 
-function makeAnnotationPayload() {
+function buildBoxes() {
     const boxes = [];
     const frameW = Number(annCvs.width || 0);
     const frameH = Number(annCvs.height || 0);
@@ -654,21 +748,32 @@ function makeAnnotationPayload() {
             });
         }
     }
+    return boxes;
+}
 
+function makeShelfPayload(shelfCode) {
     return {
+        shelf_code: shelfCode,
         shelf_corners: shelfPoints,
+        grid_shape: [gridRows, gridCols],
+        boxes: buildBoxes()
+    };
+}
+
+function makeAnnotationPayload() {
+    const frameW = Number(annCvs.width || 0);
+    const frameH = Number(annCvs.height || 0);
+    return {
         annotation_size: {
             width: frameW,
             height: frameH
         },
-        grid_shape: [gridRows, gridCols],
-        boxes: boxes,
         source_info: {
             capture_source: annotationSource.capture_source || 'file',
             camera_url: annotationSource.camera_url || '',
-            camera_name: annotationSource.camera_name || '',
-            shelf_code: annotationSource.shelf_code || annotationSource.camera_name || ''
-        }
+            camera_name: annotationSource.camera_name || ''
+        },
+        shelves: shelves
     };
 }
 
@@ -683,8 +788,7 @@ async function uploadAndStartAnnotating() {
     annotationSource = {
         capture_source: 'file',
         camera_url: '',
-        camera_name: '',
-        shelf_code: ''
+        camera_name: ''
     };
     setStatus('正在上传视频并提取首帧...', 'warn');
 
@@ -719,6 +823,7 @@ async function uploadAndStartAnnotating() {
 loadCameraIpList();
 initGridSelectors();
 initCanvasPlaceholder();
+syncShelfSelectOptions();
 loadAnnotationOnStartup();
 loadLastFrameOnStartup();
 
@@ -1028,17 +1133,8 @@ async function loadAnnotationOnStartup(options) {
 
         const payload = await resp.json();
         const ann = payload && (payload.data || payload);
-        if (!ann || !Array.isArray(ann.boxes) || ann.boxes.length === 0) {
+        if (!ann) {
             return;
-        }
-
-        loadedAnnotation = ann;
-
-        if (Array.isArray(ann.shelf_corners) && ann.shelf_corners.length === 4) {
-            shelfPoints = ann.shelf_corners.map((pt) => [Number(pt[0]), Number(pt[1])]);
-            const dst = [[0, 0], [MAP_W, 0], [MAP_W, MAP_H], [0, MAP_H]];
-            M_fwd = getPerspectiveTransform(shelfPoints, dst);
-            M_inv = getPerspectiveTransform(dst, shelfPoints);
         }
 
         if (ann.annotation_size) {
@@ -1056,25 +1152,35 @@ async function loadAnnotationOnStartup(options) {
             if (annotationSource.camera_url) {
                 document.getElementById('cameraIpInput').value = annotationSource.camera_url;
             }
-            if (annotationSource.shelf_code || annotationSource.camera_name) {
-                document.getElementById('cameraNameInput').value = annotationSource.shelf_code || annotationSource.camera_name;
-            }
         }
 
-        if (Array.isArray(ann.grid_shape) && ann.grid_shape.length === 2) {
-            const rows = Number(ann.grid_shape[0]);
-            const cols = Number(ann.grid_shape[1]);
-            if (Number.isInteger(rows) && Number.isInteger(cols)) {
-                gridRows = rows;
-                gridCols = cols;
-                initGridSelectors();
+        if (Array.isArray(ann.shelves)) {
+            shelves = ann.shelves.filter((s) => s && s.shelf_code);
+            if (!shelves.length) {
+                return;
             }
+
+            syncShelfSelectOptions(shelves[0].shelf_code);
+            activeShelfIndex = 0;
+            loadShelfIntoEditor(shelves[0]);
+            document.getElementById('cameraNameInput').value = shelves[0].shelf_code || '';
+        } else if (Array.isArray(ann.boxes) && ann.boxes.length) {
+            const legacyShelfCode = (ann.source_info && (ann.source_info.shelf_code || ann.source_info.camera_name)) || 'SHELF_1';
+            const legacyShelf = {
+                shelf_code: legacyShelfCode,
+                shelf_corners: ann.shelf_corners || [],
+                grid_shape: ann.grid_shape || [gridRows, gridCols],
+                boxes: ann.boxes
+            };
+            shelves = [legacyShelf];
+            syncShelfSelectOptions(legacyShelfCode);
+            activeShelfIndex = 0;
+            loadShelfIntoEditor(legacyShelf);
+            document.getElementById('cameraNameInput').value = legacyShelfCode;
+        } else {
+            return;
         }
-        boxIdOverrides = {};
-        applyAnnotationToGrid(ann);
-        document.getElementById('btnSave').disabled = !M_inv;
-        renderAnnotator();
-        renderBoxEditor();
+
         if (!silent) {
             setStatus('已加载 annotation.json，显示网格与 box_id。', 'ok');
         }
@@ -1102,26 +1208,36 @@ async function loadLastFrameOnStartup() {
     }
 }
 
-async function saveAnnotationOnly() {
-    if (shelfPoints.length < 4 || !M_inv) {
-        alert('请先完成四点标注');
-        return;
+function upsertShelf(payload) {
+    const code = String(payload.shelf_code || '').trim();
+    if (!code) return -1;
+    const idx = shelves.findIndex((s) => String(s.shelf_code || '') === code);
+    if (idx >= 0) {
+        shelves[idx] = payload;
+        activeShelfIndex = idx;
+    } else {
+        shelves.push(payload);
+        activeShelfIndex = shelves.length - 1;
     }
+    syncShelfSelectOptions(code);
+    return activeShelfIndex;
+}
 
-    const existingShelfCode = annotationSource.shelf_code || annotationSource.camera_name || '';
-    const shelfCode = getShelfCodeFromUI(getCameraUrlFromUI()) || existingShelfCode;
-    if (!shelfCode) {
-        alert('请先填写货架id名称(必选)');
-        return;
-    }
+function resetForNextShelf() {
+    resetAnnotationSession({ preserveCanvas: true, preserveLoaded: false, preserveGrid: false });
+    loadedAnnotation = null;
+    shelfPoints = [];
+    M_fwd = null;
+    M_inv = null;
+    activeShelfIndex = -1;
+    renderAnnotator();
+    renderBoxEditor();
+}
 
-    annotationSource.camera_name = shelfCode;
-    annotationSource.shelf_code = shelfCode;
-
-    const idCheck = validateBoxIdsBeforeSave();
-    if (!idCheck.ok) {
-        alert(idCheck.message);
-        return;
+async function saveAllShelvesToServer() {
+    if (!shelves.length) {
+        alert('暂无可保存的货架标注');
+        return { ok: false };
     }
 
     setStatus('正在保存标注...', 'warn');
@@ -1138,11 +1254,75 @@ async function saveAnnotationOnly() {
         if (resp.ok && result.status === 'success') {
             setStatus(`标注已保存成功：${result.json_path || ''}`, 'ok');
             await loadAnnotationOnStartup({ silent: true });
-        } else {
-            setStatus(`保存失败：${result.error || '未知错误'}`, 'err');
+            return { ok: true };
         }
+
+        setStatus(`保存失败：${result.error || '未知错误'}`, 'err');
+        return { ok: false };
     } catch (err) {
         setStatus(`保存失败：${err.message || '无法连接服务'}`, 'err');
+        return { ok: false };
+    }
+}
+
+function finishAnnotationSession() {
+    if (shelfPoints.length >= 4 && M_inv) {
+        const shelfCode = getShelfCodeFromUI(getCameraUrlFromUI());
+        if (!shelfCode) {
+            alert('请先填写货架id名称(必选)');
+            return;
+        }
+
+        const shelfCheck = validateShelfCodeUnique(shelfCode);
+        if (!shelfCheck.ok) {
+            alert(shelfCheck.message);
+            return;
+        }
+
+        const idCheck = validateBoxIdsBeforeSave();
+        if (!idCheck.ok) {
+            alert(idCheck.message);
+            return;
+        }
+
+        const shelfPayload = makeShelfPayload(shelfCode);
+        upsertShelf(shelfPayload);
+    }
+
+    void saveAllShelvesToServer();
+}
+
+async function saveAnnotationOnly() {
+    if (shelfPoints.length < 4 || !M_inv) {
+        alert('请先完成四点标注');
+        return;
+    }
+
+    const fallbackShelfCode = activeShelfIndex >= 0 ? shelves[activeShelfIndex].shelf_code : '';
+    const shelfCode = getShelfCodeFromUI(getCameraUrlFromUI()) || fallbackShelfCode;
+    if (!shelfCode) {
+        alert('请先填写货架id名称(必选)');
+        return;
+    }
+
+    const shelfCheck = validateShelfCodeUnique(shelfCode);
+    if (!shelfCheck.ok) {
+        alert(shelfCheck.message);
+        return;
+    }
+
+    const idCheck = validateBoxIdsBeforeSave();
+    if (!idCheck.ok) {
+        alert(idCheck.message);
+        return;
+    }
+
+    const shelfPayload = makeShelfPayload(shelfCode);
+    upsertShelf(shelfPayload);
+
+    const result = await saveAllShelvesToServer();
+    if (result.ok) {
+        resetForNextShelf();
     }
 }
 
