@@ -804,11 +804,14 @@ annCvs.onmouseup = () => {
 
 function renderAnnotator() {
     if (!bgImage.src) {
-        if (M_inv) {
+        if (loadedAnnotation) {
+            renderLoadedAnnotation();
+            if (M_inv) {
+                drawEditableGridBoxes();
+            }
+        } else if (M_inv) {
             renderEmptyCanvas();
             drawEditableGridBoxes();
-        } else if (loadedAnnotation) {
-            renderLoadedAnnotation();
         } else {
             renderEmptyCanvas();
         }
@@ -819,19 +822,7 @@ function renderAnnotator() {
     annCtx.lineWidth = 3;
 
     if (shelfPoints.length > 0) {
-        annCtx.strokeStyle = '#2ecc71';
-        annCtx.beginPath();
-        annCtx.moveTo(shelfPoints[0][0], shelfPoints[0][1]);
-        for (let i = 1; i < shelfPoints.length; i++) annCtx.lineTo(shelfPoints[i][0], shelfPoints[i][1]);
-        if (shelfPoints.length === 4) annCtx.closePath();
-        annCtx.stroke();
-
-        annCtx.fillStyle = '#e74c3c';
-        for (let p of shelfPoints) {
-            annCtx.beginPath();
-            annCtx.arc(p[0], p[1], 6, 0, Math.PI * 2);
-            annCtx.fill();
-        }
+        drawShelfOutline();
     }
 
     if (M_inv) {
@@ -895,6 +886,25 @@ function renderLoadedAnnotation() {
     const ann = loadedAnnotation;
     if (!ann) return;
     drawAnnotationBoxes(ann, { overlay: false });
+    drawShelfOutline();
+}
+
+function drawShelfOutline() {
+    if (!Array.isArray(shelfPoints) || shelfPoints.length === 0) return;
+    annCtx.lineWidth = 3;
+    annCtx.strokeStyle = '#2ecc71';
+    annCtx.beginPath();
+    annCtx.moveTo(shelfPoints[0][0], shelfPoints[0][1]);
+    for (let i = 1; i < shelfPoints.length; i++) annCtx.lineTo(shelfPoints[i][0], shelfPoints[i][1]);
+    if (shelfPoints.length === 4) annCtx.closePath();
+    annCtx.stroke();
+
+    annCtx.fillStyle = '#e74c3c';
+    for (let p of shelfPoints) {
+        annCtx.beginPath();
+        annCtx.arc(p[0], p[1], 6, 0, Math.PI * 2);
+        annCtx.fill();
+    }
 }
 
 function drawAnnotationBoxes(ann, options) {
@@ -1036,6 +1046,21 @@ async function loadAnnotationOnStartup(options) {
             annCvs.height = Number(ann.annotation_size.height) || annCvs.height;
         }
 
+        if (ann.source_info) {
+            annotationSource = {
+                capture_source: ann.source_info.capture_source || 'file',
+                camera_url: ann.source_info.camera_url || '',
+                camera_name: ann.source_info.camera_name || '',
+                shelf_code: ann.source_info.shelf_code || ''
+            };
+            if (annotationSource.camera_url) {
+                document.getElementById('cameraIpInput').value = annotationSource.camera_url;
+            }
+            if (annotationSource.shelf_code || annotationSource.camera_name) {
+                document.getElementById('cameraNameInput').value = annotationSource.shelf_code || annotationSource.camera_name;
+            }
+        }
+
         if (Array.isArray(ann.grid_shape) && ann.grid_shape.length === 2) {
             const rows = Number(ann.grid_shape[0]);
             const cols = Number(ann.grid_shape[1]);
@@ -1049,6 +1074,7 @@ async function loadAnnotationOnStartup(options) {
         applyAnnotationToGrid(ann);
         document.getElementById('btnSave').disabled = !M_inv;
         renderAnnotator();
+        renderBoxEditor();
         if (!silent) {
             setStatus('已加载 annotation.json，显示网格与 box_id。', 'ok');
         }
@@ -1082,7 +1108,8 @@ async function saveAnnotationOnly() {
         return;
     }
 
-    const shelfCode = getShelfCodeFromUI(getCameraUrlFromUI());
+    const existingShelfCode = annotationSource.shelf_code || annotationSource.camera_name || '';
+    const shelfCode = getShelfCodeFromUI(getCameraUrlFromUI()) || existingShelfCode;
     if (!shelfCode) {
         alert('请先填写货架id名称(必选)');
         return;
